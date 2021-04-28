@@ -1,0 +1,34 @@
+{
+  "name": "@probedjs/task-runner",
+  "version": "0.1.0",
+  "description": "",
+  "main": "lib/index.js",
+  "scripts": {
+    "lint": "eslint src/**/*",
+    "build": "tsc"
+  },
+  "type": "module",
+  "license": "Apache-2.0",
+  "devDependencies": {
+    "@types/node": "^15.0.1",
+    "@typescript-eslint/eslint-plugin": "^4.22.0",
+    "eslint": "^7.25.0",
+    "typescript": "^4.2.4"
+  },
+  "author": {
+    "name": "Francois Chabot",
+    "email": "francois.chabot.dev@gmail.com"
+  },
+  "dependencies": {
+    "@probedjs/eslint-config": "^0.1.0",
+    "@typescript-eslint/parser": "^4.22.0",
+    "chalk": "^4.1.1",
+    "eslint": "^7.24.0",
+    "eslint-import-resolver-typescript": "^2.4.0",
+    "eslint-plugin-import": "^2.22.1",
+    "eslint-plugin-prettier": "^3.4.0",
+    "log-update": "^4.0.0",
+    "prettier": "^2.2.1",
+    "strip-ansi": "^7.0.0"
+  }
+}

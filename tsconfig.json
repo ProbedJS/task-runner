@@ -1,0 +1,23 @@
+{
+    "compilerOptions": {
+        "sourceMap": true,
+        "target": "es2018",
+        "module": "ES6",
+        "declaration": true,
+        "outDir": "./lib",
+        "moduleResolution": "node",
+        "allowSyntheticDefaultImports": true,
+        "esModuleInterop": true,
+        "strict": true,
+        "lib": [
+            "esnext"
+        ],
+        "newLine": "lf"
+    },
+    "include": [
+        "src",
+    ],
+    "exclude": [
+        "node_modules",
+    ]
+}
