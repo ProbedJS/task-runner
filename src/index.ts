@@ -44,26 +44,12 @@ const statusText = {
   fail: chalk.red('Fail'),
 };
 
-/** The length of the common prefix of two strings. */
-const commonLen = (a: string, b: string): number => {
-  const cmpLen = Math.min(a.length, b.length);
-  let result = 0;
-  for (result = 0; result < cmpLen; ++result) {
-    if (a[result] !== b[result]) break;
-  }
-  return result;
-};
-
-const combineStrings = (a: string, b: string, count: number) => {
-  return `${a.slice(0, commonLen(a, b))} … [${count}]`;
-};
-
 interface ITask {
   lineLength(depth: number): number;
   status: Status;
   render(depth: number, lineLength: number): string;
   printLogs(): void;
-  addMessage(msg: string): void;
+  setMessage(msg: string): void;
   addLog(log: string): void;
   update(): void;
 
@@ -78,13 +64,17 @@ const performTask = async <T>(task: () => Promise<T>, owner: Task<T>) => {
 
     await Promise.all(owner._subTasks.map((t) => t.wait()));
 
-    owner.status = 'done';
+    // In the event the user manually set the state to fail.
+    if (owner.status === 'fail') {
+      throw new Error(owner._message);
+    }
 
+    owner.status = 'done';
     owner._owner.requestRerender();
     return result;
   } catch (e) {
     owner.status = 'fail';
-    owner.addMessage(e.message);
+    owner.setMessage(e.message);
 
     owner._owner.requestRerender();
     throw e;
@@ -124,15 +114,8 @@ export class Task<T> implements ITask {
     }
   }
 
-  addMessage(msg: string): void {
-    const stripped = stripAnsi(msg);
-    this._msgCount += 1;
-    if (this._message.length === 0) {
-      this._message = stripped;
-      return;
-    }
-
-    this._message = combineStrings(this._message, stripped, this._msgCount);
+  setMessage(msg: string): void {
+    this._message = msg;
     this._owner.requestRerender();
   }
 
@@ -259,7 +242,7 @@ export const runOptional = async <T>(
 export const setMessage = (msg: string): void => {
   const current = currentTask.getStore();
   if (current) {
-    current.addMessage(msg);
+    current.setMessage(msg);
   }
 };
 
