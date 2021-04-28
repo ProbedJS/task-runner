@@ -348,12 +348,12 @@ class Runner {
     this._roots.forEach((r) => r.update());
     this._render();
     this._backend.done();
-    this._roots.forEach((r) => r.printLogs());
-    console.log('\n');
-
     console.log = this._consoleLog;
     console.error = this._consoleErr;
     console.warn = this._consoleWarn;
     console.info = this._consoleInfo;
+
+    this._roots.forEach((r) => r.printLogs());
+    console.log('\n');
   }
 }
