@@ -18,18 +18,33 @@
 import logUpdate from 'log-update';
 import chalk from 'chalk';
 import stripAnsi from 'strip-ansi';
+import _ from 'lodash';
 
 import { AsyncLocalStorage } from 'async_hooks';
 
+export type Task<T> = () => Promise<T>;
+
+/** */
 export type Status = '...' | 'done' | 'skip' | 'warn' | 'fail';
 
-const currentTask = new AsyncLocalStorage<ITask>();
+/** */
+export interface TaskInfo {
+  /** Primary label. */
+  label: string;
 
-let currentRunner: Runner | undefined = undefined;
+  /** Current Status. No need to check current status before setting this. */
+  status: Status;
+
+  /** Message that appears after the status. */
+  message: string;
+}
+
+const currentTask = new AsyncLocalStorage<ITaskState>();
+
+let activeRunner: Runner | undefined = undefined;
 
 const statusStrength: Record<Status, number> = {
   '...': 0,
-
   done: 1,
   warn: 2,
   fail: 3,
@@ -44,101 +59,107 @@ const statusText = {
   fail: chalk.red('Fail'),
 };
 
-interface ITask {
-  lineLength(depth: number): number;
-  status: Status;
-  render(depth: number, lineLength: number): string;
-  printLogs(): void;
-  setMessage(msg: string): void;
-  addLog(log: string): void;
-  update(): void;
+interface ITaskState {
+  readonly info: TaskInfo;
+  //  owner: Runner;
+  subTasks: ITaskState[];
 
+  updateInfo(i: Partial<TaskInfo>): void;
+
+  update(): void;
   wait(): Promise<void>;
-  _owner: Runner;
-  _subTasks: ITask[];
+
+  lineLength(depth: number): number;
+  rerender(): void;
+  render(depth: number, lineLength: number): string;
+
+  addLog(log: string): void;
+  printLogs(): void;
+
+  runner: Runner;
 }
 
-const performTask = async <T>(task: () => Promise<T>, owner: Task<T>) => {
+const performTask = async <T>(task: () => Promise<T>, owner: ITaskState) => {
   try {
     const result = await currentTask.run(owner, task);
 
-    await Promise.all(owner._subTasks.map((t) => t.wait()));
+    await Promise.all(owner.subTasks.map((t) => t.wait()));
 
     // In the event the user manually set the state to fail.
-    if (owner.status === 'fail') {
-      throw new Error(owner._message);
+    if (owner.info.status === 'fail') {
+      throw new Error(owner.info.message);
     }
 
-    owner.status = 'done';
-    owner._owner.requestRerender();
+    owner.updateInfo({ status: 'done' });
+    owner.rerender();
     return result;
   } catch (e) {
-    owner.status = 'fail';
-    owner.setMessage(e.message);
-
-    owner._owner.requestRerender();
+    owner.updateInfo({ status: 'fail', message: e.message });
+    owner.rerender();
     throw e;
   }
 };
 
-export class Task<T> implements ITask {
-  _owner: Runner;
-  _description: string;
-  _status: Status = '...';
-  _subTasks: ITask[] = [];
-  _logs: string[] = [];
+export class TaskState<T> implements ITaskState {
+  runner: Runner;
+  info: TaskInfo;
+  completion: Promise<T>;
 
-  _message = '';
-  _msgCount = 0;
+  subTasks: ITaskState[] = [];
 
-  _completion: Promise<T>;
+  logs: string[] = [];
 
-  constructor(description: string, task: () => Promise<T>, owner: Runner) {
-    this._owner = owner;
-    this._description = description;
+  constructor(task: () => Promise<T>, runner: Runner, info: Partial<TaskInfo>) {
+    this.runner = runner;
+    this.info = { status: '...', label: 'Unknown', message: '', ...info };
 
-    this._completion = performTask(task, this);
+    this.completion = performTask(task, this);
   }
 
-  get status(): Status {
-    return this._status;
+  updateInfo(info: Partial<TaskInfo>): void {
+    if (info.status) {
+      this.setStatus(info.status);
+    }
+
+    const noStatus = _.omit(info, 'status');
+    this.info = { ...this.info, ...noStatus };
+
+    this.rerender();
   }
 
-  set status(status: Status) {
-    const currentStr = statusStrength[this.status];
+  setStatus(status: Status): void {
+    const currentStr = statusStrength[this.info.status];
     const incomingStr = statusStrength[status];
 
     if (incomingStr > currentStr) {
-      this._status = status;
-      this._owner.requestRerender();
+      this.info.status = status;
     }
   }
 
-  setMessage(msg: string): void {
-    this._message = msg;
-    this._owner.requestRerender();
+  rerender(): void {
+    this.runner.requestRerender();
   }
 
   addLog(log: string): void {
-    this._logs.push(log);
+    this.logs.push(log);
   }
 
   update(): void {
-    if (this._subTasks.length > 0) {
-      if (this._subTasks.some((t) => t.status === 'fail')) {
-        this.status = 'fail';
-      } else if (this._subTasks.some((t) => t.status === 'warn')) {
-        this.status = 'warn';
-      } else if (!this._subTasks.some((t) => t.status === '...')) {
-        this.status = 'done';
+    if (this.subTasks.length > 0) {
+      if (this.subTasks.some((t) => t.info.status === 'fail')) {
+        this.updateInfo({ status: 'fail' });
+      } else if (this.subTasks.some((t) => t.info.status === 'warn')) {
+        this.updateInfo({ status: 'warn' });
+      } else if (!this.subTasks.some((t) => t.info.status === '...')) {
+        this.updateInfo({ status: 'done' });
       }
     }
   }
 
   lineLength(depth: number): number {
-    return this._subTasks.reduce(
+    return this.subTasks.reduce(
       (previous, task) => Math.max(previous, task.lineLength(depth + 1)),
-      stripAnsi(this._description).length + 2 * depth
+      stripAnsi(this.info.label).length + 2 * depth
     );
   }
 
@@ -146,11 +167,11 @@ export class Task<T> implements ITask {
     const pad = ' '.repeat(depth * 2);
     const postPad = '| '.repeat(depth);
     let line =
-      `${pad}${this._description}`.padEnd(lineLength) +
-      `  ${postPad}[${statusText[this.status]}]`;
+      `${pad}${this.info.label}`.padEnd(lineLength) +
+      `  ${postPad}[${statusText[this.info.status]}]`;
 
-    if (this._message.length > 0) {
-      line += ` - ${this._message}`;
+    if (this.info.message.length > 0) {
+      line += ` - ${this.info.message}`;
     }
 
     const available = process.stdout.columns || 80;
@@ -164,26 +185,26 @@ export class Task<T> implements ITask {
 
     return [
       line,
-      ...this._subTasks.map((t) => t.render(depth + 1, lineLength)),
+      ...this.subTasks.map((t) => t.render(depth + 1, lineLength)),
     ].join('\n');
   }
 
   printLogs(): void {
-    if (this._logs.length > 0) {
+    if (this.logs.length > 0) {
       const available = process.stdout.columns || 80;
-      const header = `###### ${chalk.cyan(this._description)} : ${
-        this._logs.length
+      const header = `###### ${chalk.cyan(this.info.label)} : ${
+        this.logs.length
       } ######`;
 
       const padding = available - stripAnsi(header).length;
       console.log(`\n${' '.repeat(padding / 2)}${header}`);
       console.log();
-      for (const l of this._logs) {
+      for (const l of this.logs) {
         console.log(l);
       }
     }
 
-    for (const t of this._subTasks) {
+    for (const t of this.subTasks) {
       t.printLogs();
     }
   }
@@ -191,72 +212,67 @@ export class Task<T> implements ITask {
   async wait(): Promise<void> {
     // We need to wait on the main task being done first, because it might
     // queue subtasks.
-    await this._completion;
-    await Promise.all([...this._subTasks.map((t) => t.wait())]);
+    await this.completion;
+    await Promise.all([...this.subTasks.map((t) => t.wait())]);
   }
 }
 
+/** Runs a task. If it is called while there is no runner active, it will immediately run the task to completion. */
 export const run = async <T>(
-  description: string,
-  inTask: () => Promise<T>
+  inTask: () => Promise<T>,
+  info?: Partial<TaskInfo>
 ): Promise<T> => {
   const current = currentTask.getStore();
   if (!current) {
-    if (!currentRunner) {
-      currentRunner = new Runner();
+    if (!activeRunner) {
+      activeRunner = new Runner();
     }
 
-    const taskObj = new Task(description, inTask, currentRunner);
-    currentRunner._roots.push(taskObj);
+    const taskObj = new TaskState(inTask, activeRunner, info || {});
+    activeRunner._roots.push(taskObj);
 
     try {
-      const result = taskObj._completion;
+      const result = taskObj.completion;
       await result;
       return result;
     } finally {
-      currentRunner.rootDone();
+      activeRunner.rootDone();
     }
   } else {
-    const entry = new Task(description, inTask, current._owner);
-    current._subTasks.push(entry);
-    current._owner.requestRerender();
+    const entry = new TaskState(inTask, current.runner, info || {});
+    current.subTasks.push(entry);
+    current.rerender();
 
-    return entry._completion;
+    return entry.completion;
   }
 };
 
-export const runOptional = async <T>(
-  description: string,
-  inTask: () => Promise<T>
+/** Runs a task, tolerating errors. If the task fails, it will be marked as "skipped" */
+export const tryRun = async <T>(
+  inTask: () => Promise<T>,
+  info?: Partial<TaskInfo>
 ): Promise<T | undefined> => {
-  return run<T | undefined>(description, async () => {
+  return run<T | undefined>(async () => {
     try {
       return await inTask();
     } catch (e) {
-      setMessage(e.message);
-      setStatus('skip');
+      update({ status: 'skip', message: e.message });
     }
-  });
+  }, info);
 };
 
-export const setMessage = (msg: string): void => {
+/** Updates the state of the task currently being run. Does nothing if called out of context. */
+export const update = (info: Partial<TaskInfo>): void => {
   const current = currentTask.getStore();
   if (current) {
-    current.setMessage(msg);
-  }
-};
-
-export const setStatus = (stat: Status): void => {
-  const current = currentTask.getStore();
-  if (current) {
-    current.status = stat;
+    current.updateInfo(info);
   }
 };
 
 class Runner {
   _terminatedRoots = 0;
   _backend: logUpdate.LogUpdate;
-  _roots: ITask[] = [];
+  _roots: ITaskState[] = [];
   _rerender?: NodeJS.Immediate;
   _consoleLog = console.log;
   _consoleErr = console.error;
@@ -279,7 +295,7 @@ class Runner {
       const current = currentTask.getStore();
       if (current) {
         current.addLog(`${message}`);
-        current.status = 'warn';
+        current.updateInfo({ status: 'warn' });
       }
     };
 
@@ -288,7 +304,7 @@ class Runner {
       const current = currentTask.getStore();
       if (current) {
         current.addLog(`${message}`);
-        current.status = 'fail';
+        current.updateInfo({ status: 'fail' });
       }
     };
 
