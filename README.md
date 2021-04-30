@@ -1,4 +1,4 @@
-#  Task Runner:
+#  Task Runner
 
 A straightforward batch task runner with good looking logs.
 
